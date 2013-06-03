@@ -1,0 +1,218 @@
+//set up time stuff
+time = 0.d0
+tstart = 0.d0
+tstop = 5.d9  #(in years) assume system will exist for 5 Gyrs for now
+dtout = 5.d9 #time of outputs in years (we don't want a lot of output)
+algor = 1 #use hybrid integrator for now
+tol = 1.d-15 #require very small error for B-S integrations
+rmax = 100.d0 #throw out planets further than 100 AU
+rcen = 0.005d0 #set stellar radius equal to 1 solar radius for now
+jcen = 0.d0 #assume central star is perfect sphere
+cefac = 3.5 #use B-S integrator inside 3.5 Hill Radii
+nfun = 10 #I've never changed this parameter and it's always been set to 10
+//
+
+//now choose planet number
+nbod = 3 + 1 #include central star
+nbig = nbod #everything is self-interacting
+ 
+//now choose planetary masses
+//randomly draw masses according to dN/dM ~ M**-1.1
+//assume a minimum mass of 1 Saturn mass and a max mass of 3 Jupiter masses
+mmin = 2.857d-4 #mass of saturn in solar masses
+mmax = 2.863d-3 #3 Jupiter masses in solar masses
+
+//integration constant to ensure sum of all mass probabilities = 1
+k = 0.1 / (mmin**-0.1 - mmax**-0.1) 
+
+//now assign masses
+m[0] = 1.0 #for now assume a 1 solar mass central star
+for i = 1,3
+    xx = randomnumber #draw random number from uniform dist. between 0 and 1
+
+    m[i] = (mmin**-0.1 - xx / (0.1 * k))**(-1.0 / 0.1)
+endfor
+
+//with masses chosen we now set the planetary spacing
+amin = randomnumber #draw random number from uniform dist. between 0 and 1
+amin = amin * 3. + 2. #set inner orbit between 2 and 5 AU
+
+//with a minimum semimajor axis we now assign the other two orbits
+for i = 2,3
+    sep = randomnumber #draw random number from uniform dist. between 0 and 1
+    sep = sep * 2. + 6. #require spacings between 6 and 8 mutual Hill radii
+
+    mfactor = ((m[i] + m[i-1]) / m[0] / 3.)**(1./3.)
+    a[i] = a[i-1] * (1. + 0.5 * mfactor * sep) / (1. - 0.5 * mfactor * sep)
+endfor
+//note: left a[0] undefined since 0 is the central star
+
+//now set orbital eccentricities and inclinations
+for i = 1,3
+    ecc[i] = randomnumber #draw random number from uniform dist. between 0 and 1
+    ecc[i] = ecc[i] * 0.01 #start with nearly circular orbits
+
+    inc[i] = randomnumber #draw random number from uniform dist. between 0 and 1
+    inc[i] = inc[i] * PI / 180. #start with nearly coplanar orbits
+endfor
+
+//set rest of orbital elements
+for i = 1,3
+    omega[i] = randomnumber #draw random number from uniform dist. between 0 and 1
+    omega[i] = omega[i] * 2. * PI #random argument of pericenter
+
+    capom[i] = randomnumber #draw random number from uniform dist. between 0 and 1
+    capom[i] = capom[i] * 2. * PI #random longitude of ascending node
+
+    capm[i] = randomnumber #draw random number from uniform dist. between 0 and 1
+    capm[i] = capm[i] * 2. * PI #random mean anomaly
+endfor
+
+//now convert orbital elements into cartesian positions and velocities
+for i = 1,3
+    //this is a messy conversion function I can give you
+    x,y,z,vx,vy,vz = orb2xv(a[i],e[i],inc[i],capom[i],omega[i],capm[i],m[0])
+    xp[i] = x
+    yp[i] = y
+    zp[i] = z
+    vxp[i] = vx
+    vyp[i] = vy
+    vzp[i] = vz
+endfor
+
+//make sure Sun is stationary
+xp[0] = 0.d0
+yp[0] = 0.d0
+zp[0] = 0.d0
+vxp[0] = 0.d0
+vyp[0] = 0.d0
+vzp[0] = 0.d0
+
+//we might want to perform a random rotation of the system, but forget about that for now
+
+//with orbits chosen, we can now select an integration timestep
+minperiod = 4. * PI**2 / (G * (m[0] + m[1])) * a[1]**1.5 #fix units here
+h0 = minperiod / 20.d0
+
+//now set number of steps between dumps
+ndump = (tstop - tstart) / h0 #only one dump?
+
+//now find center of mass of system
+mtot = 0.d0
+xcom = 0.d0
+ycom = 0.d0
+zcom = 0.d0
+vxcom = 0.d0
+vycom = 0.d0
+vzcom = 0.d0
+for i = 0,3
+    mtot = mtot + m[i]
+    xcom = xcom + m[i] * xp[i]
+    ycom = ycom + m[i] * yp[i]
+    zcom = zcom + m[i] * zp[i]
+    vxcom = vxcom + m[i] * vxp[i]
+    vycom = vycom + m[i] * vyp[i]
+    vzcom = vzcom + m[i] * vzp[i]
+endfor
+xcom = xcom / mtot
+ycom = ycom / mtot
+zcom = zcom / mtot
+vxcom = vxcom / mtot
+vycom = vycom / mtot
+vzcom = vzcom / mtot
+
+//find initial kinetic energy of system
+KE = 0.d0
+for i = 0, 3
+   vtot2 = (vxp - vxcom)**2 + (vyp - vycom)**2 + (vzp - vzcom)**2
+   KE = KE + 0.5 * m[i] * vtot2 #units!
+endfor
+
+//find initial potential energy of system
+for i = 0, 3
+    for j = i+1, 3
+    	dx = x[i] - x[j]
+	dy = y[i] - y[j]
+	dz = z[i] - z[j]
+	
+    	rad = sqrt(dx*dx + dy*dy + dz*dz)
+
+    	PE = PE - G * m[i] * m[j] / rad #units!
+    endfor
+endfor 
+en[1] = KE + PE #initial energy
+en[2] = en[1] #current energy
+en[3] = 0.d0 #energy change due to lost bodies
+
+//find the initial angular momentum of system
+Lx = 0.d0
+Ly = 0.d0
+Lz = 0.d0
+for i = 0, 3
+    Lx = Lx + m[i] * (yp[i] * vzp[i] - zp[i] * vyp[i])
+    Ly = Ly + m[i] * (zp[i] * vxp[i] - xp[i] * vzp[i])
+    Lz = Lz + m[i] * (xp[i] * vyp[i] - yp[i] * vxp[i])
+endfor
+am[1] = sqrt(Lx*Lx + Ly*Ly + Lz*Lz) #initial ang. momentum
+am[2] = am[1] #current ang. momentum
+am[3] = 0.d0 #ang. momentum change due to lost bodies
+
+//s is useless if there's no binary
+for i = 0,3
+    s[i] = 0.d0
+endfor
+
+//set planetary densities...for now just assume 1 g/cm**3
+for i = 1,3
+    rho[i] = 1.0d0
+endfor
+
+//don't need rceh...it sets radius at which to record close encounters
+for i = 1,3
+    rceh[i] = 0.d0
+endfor
+
+//set integration epoch for each planet (they all start at t=0)
+for i = 1,3
+    epoch[i] = tstart    
+endfor
+
+//set status of all bodies to 'active' initially
+for i = 1,3
+    stat[i] = 0
+endfor
+
+//set name for each body
+for i = 1,3
+    id[i] = 'P' + str(i)
+endfor
+
+//set non-gravitational forces to zero, since we never use them
+for i = 1,3
+    ngf[i,0] = 0.d0
+    ngf[i,1] = 0.d0
+    ngf[i,2] = 0.d0
+    ngf[i,3] = 0.d0
+endfor
+
+//set integration options
+for i = 0,7
+    opt[0] = 0 #don't stop integration after close encounter
+    opt[1] = 0 #don't include fragmentation
+    opt[2] = 3 #express time in years and time relative to start time
+    opt[3] = 2 #medium output precision
+    opt[6] = 0 #no relativistic effects
+    opt[7] = 0 #no user-defined force
+endfor
+//note: opt[4] and opt[5] are not used
+
+opflag = 0 #normal integration (forward in time) and normal output
+ngflag = 0 #no non-gravitational forces
+
+outfile = ?? #don't know what to do here for output filenames
+dumpfile = ?? #same with dump filenames
+lmem = ?? #this is a bunch of confusing crap about output messages, errors, etc.
+mem = ?? #same here
+
+en = ? #system energy
+am = ? #system ang momentum
